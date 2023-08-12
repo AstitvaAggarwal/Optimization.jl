@@ -4,7 +4,7 @@ import SciMLBase: OptimizationFunction
 import Optimization, ArrayInterface
 import ADTypes: AutoSparseForwardDiff
 import Symbolics
-using LinearAlgebra
+using LinearAlgebra, SparseArrays
 isdefined(Base, :get_extension) ? (using ForwardDiff, SparseDiffTools) :
 (using ..ForwardDiff, ..SparseDiffTools)
 
@@ -70,6 +70,7 @@ function Optimization.instantiate_function(f::OptimizationFunction{true}, x,
         jaccache = ForwardColorJacCache(cons,
             x,
             chunksize;
+            dx=zeros(eltype(x), num_cons),
             colorvec = cons_jac_colorvec,
             sparsity = cons_jac_prototype)
         cons_j = function (J, θ)
@@ -135,20 +136,20 @@ function Optimization.instantiate_function(f::OptimizationFunction{true},
     if f.hess === nothing
         hess_sparsity = Symbolics.hessian_sparsity(_f, cache.u0)
         hess_colors = matrix_colors(tril(hess_sparsity))
-        hess = (res, θ, args...) -> numauto_color_hessian!(res, x -> _f(x, args...), θ,
-            ForwardColorHesCache(_f, θ,
-                hess_colors,
-                hess_sparsity,
-                (res, θ) -> grad(res,
-                    θ,
-                    args...)))
+        hess = (res, θ, args...) -> autoauto_color_hessian!(res, x -> _f(x, args...), θ, hess_colors, hess_sparsity)
+            # ForwardColorHesCache(_f, θ,
+            #     hess_colors,
+            #     hess_sparsity,
+            #     (res, θ) -> grad(res,
+            #         θ,
+            #         args...)))
     else
         hess = (H, θ, args...) -> f.hess(H, θ, cache.p, args...)
     end
 
     if f.hv === nothing
         hv = function (H, θ, v, args...)
-            num_hesvecgrad!(H, (res, x) -> grad(res, x, args...), θ, v)
+            auto_hesvecgrad!(H, (res, x) -> grad(res, x, args...), θ, v)
         end
     else
         hv = f.hv
@@ -162,11 +163,15 @@ function Optimization.instantiate_function(f::OptimizationFunction{true},
     end
 
     if cons !== nothing && f.cons_j === nothing
+        fcons = [(x) -> (_res = zeros(eltype(x), num_cons);
+        cons(_res, x);
+        _res[i]) for i in 1:num_cons]
         cons_jac_prototype = Symbolics.jacobian_sparsity(cons,
             zeros(eltype(cache.u0), num_cons),
             cache.u0)
         cons_jac_colorvec = matrix_colors(tril(cons_jac_prototype))
         jaccache = ForwardColorJacCache(cons, cache.u0, chunksize;
+            dx = zeros(eltype(cache.u0), num_cons),
             colorvec = cons_jac_colorvec,
             sparsity = cons_jac_prototype)
         cons_j = function (J, θ)
@@ -177,10 +182,8 @@ function Optimization.instantiate_function(f::OptimizationFunction{true},
     end
 
     if cons !== nothing && f.cons_h === nothing
-        function gen_conshess_cache(_f, x)
-            conshess_sparsity = copy(Symbolics.hessian_sparsity(_f, x))
-            conshess_colors = matrix_colors(conshess_sparsity)
-            hesscache = ForwardColorHesCache(_f, x, conshess_colors,
+        function gen_conshess_cache(_f, x, conshess_colors, conshess_sparsity)
+            hesscache = ForwardAutoColorHesCache(_f, x, conshess_colors,
                 conshess_sparsity)
             return hesscache
         end
@@ -188,9 +191,12 @@ function Optimization.instantiate_function(f::OptimizationFunction{true},
         fcons = [(x) -> (_res = zeros(eltype(x), num_cons);
         cons(_res, x);
         _res[i]) for i in 1:num_cons]
+
+        conshess_sparsity = [Symbolics.hessian_sparsity(fcons[i], cache.u0) for i in 1:num_cons]
+        conshess_colors = matrix_colors.(conshess_sparsity)
         cons_h = function (res, θ)
             for i in 1:num_cons
-                numauto_color_hessian!(res[i], fcons[i], θ, gen_conshess_cache(fcons[i], θ))
+                autoauto_color_hessian!(res[i], fcons[i], θ, gen_conshess_cache(fcons[i], θ, conshess_colors[i], conshess_sparsity[i]))
             end
         end
     else
@@ -205,9 +211,9 @@ function Optimization.instantiate_function(f::OptimizationFunction{true},
 
     return OptimizationFunction{true}(f.f, adtype; grad = grad, hess = hess, hv = hv,
         cons = cons, cons_j = cons_j, cons_h = cons_h,
-        hess_prototype = f.hess_prototype,
-        cons_jac_prototype = f.cons_jac_prototype,
-        cons_hess_prototype = f.cons_hess_prototype,
+        hess_prototype = hess_sparsity,
+        cons_jac_prototype = cons_jac_prototype,
+        cons_hess_prototype = conshess_sparsity,
         lag_h, f.lag_hess_prototype)
 end
 

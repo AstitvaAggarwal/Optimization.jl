@@ -173,17 +173,17 @@ function Optimization.instantiate_function(f, cache::Optimization.ReInitCache,
 
     if cons !== nothing && f.cons_j === nothing
         cons_jac_prototype = f.cons_jac_prototype === nothing ?
-                             Symbolics.jacobian_sparsity(cons, zeros(eltype(x), num_cons),
-            x) :
+                             Symbolics.jacobian_sparsity(cons, zeros(eltype(cache.u0), num_cons),
+            cache.u0) :
                              f.cons_jac_prototype
         cons_jac_colorvec = f.cons_jac_colorvec === nothing ?
                             matrix_colors(tril(cons_jac_prototype)) :
                             f.cons_jac_colorvec
+        y0 = zeros(num_cons)
+        jaccache = FD.JacobianCache(copy(cache.u0), copy(y0), copy(y0);
+            colorvec=cons_jac_colorvec,
+            sparsity=cons_jac_prototype)
         cons_j = function (J, θ)
-            y0 = zeros(num_cons)
-            jaccache = FD.JacobianCache(copy(x), copy(y0), copy(y0);
-                colorvec = cons_jac_colorvec,
-                sparsity = cons_jac_prototype)
             FD.finite_difference_jacobian!(J, cons, θ, jaccache)
         end
     else
